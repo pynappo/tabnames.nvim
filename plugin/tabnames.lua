@@ -1,0 +1,1 @@
+require('tabnames').setup()
