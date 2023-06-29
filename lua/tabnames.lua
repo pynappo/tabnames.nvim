@@ -23,7 +23,6 @@ end
 
 function tabnames.configure(opts)
 	local config = vim.tbl_deep_extend('force', vim.g.tabnames_config, opts or {})
-	vim.print(config)
 	vim.validate({
 		default_tab_name = {
 			config.default_tab_name,
@@ -108,7 +107,7 @@ function tabnames.set_tab_name(tabnr, name, notify, expand)
 	local current_tab = not tabnr or tabnr == 0 or tabnr == vim.api.nvim_tabpage_get_number(0)
 	if current_tab then tabnr = vim.api.nvim_tabpage_get_number(0) end
 	local tabname = name
-	if not name and type(config.default_tab_name) == 'function' then name = config.default_tab_name(tabnr) end
+	if not tabname and type(config.default_tab_name) == 'function' then tabname = config.default_tab_name(tabnr) end
 	tabname = tostring(tabname)
 	if expand then tabname = vim.fn.expand(tabname) end
 
