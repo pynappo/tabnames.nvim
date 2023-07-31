@@ -1,24 +1,50 @@
 local tabnames = {}
 
-tabnames.tab_name_presets = {
+-- Some presets for tab naming
+tabnames.presets = {
 	tabnr = vim.api.nvim_tabpage_get_number,
-	tab_cwd = function(tabnr) return vim.fn.getcwd(-1, tabnr) end,
-	short_tab_cwd = function(tabnr) return vim.fn.pathshorten(tabnames.tab_name_presets.tab_cwd(tabnr)) end,
+	short_tab_cwd = function(tabnr) return vim.fn.pathshorten(vim.fn.getcwd(-1, tabnr)) end,
+	short_active_buffer_name = function(tabnr)
+		local active_buffer = vim.api.nvim_win_get_buf(vim.api.nvim_tabpage_get_win(tabnr))
+		local active_buffer_name = tabnames.presets.special_buffers(tabnr) or vim.api.nvim_buf_get_name(active_buffer)
+		return vim.fn.pathshorten(active_buffer_name)
+	end,
+	special_buffers = function(tabnr) 
+		local active_buffer = vim.api.nvim_win_get_buf(vim.api.nvim_tabpage_get_win(tabnr))
+		if vim.bo[active_buffer].buftype == 'nofile' then return vim.fn.expand('%:t') end
+	end,
+	special_tabs = function(tabnr)
+		if vim.t[tabnr].diffview_view_initialized then return 'Diffview' end
+	end
 }
 
 tabnames.cache = {}
 
 vim.g.tabnames_config = {
 	auto_suggest_names = true,
-	default_tab_name = tabnames.tab_name_presets.short_tab_cwd,
-	experimental = {
-		session_support = false
-	},
+	default_tab_name = function(tabnr)
+		return
+			tabnames.presets.special_tabs(tabnr)
+			or tabnames.presets.special_buffers(tabnr)
+			or tabnames.presets.short_active_buffer_name(tabnr)
+	end,
+	session_support = false,
+	update_default_tab_name = {'TabNewEntered', 'BufEnter'},
+	setup_autocmds = true,
+	setup_commands = true,
 }
 
 function tabnames.cache_set(key, value)
 	tabnames.cache[key] = value
 	vim.g.TabnamesCache = vim.json.encode(tabnames.cache)
+end
+
+
+function tabnames.setup(opts)
+	tabnames.configure(opts)
+	local tabnames_augroup = vim.api.nvim_create_augroup('Tabnames', { clear = true })
+	if vim.g.tabnames_config.setup_autocmds then tabnames.setup_autocmds(tabnames_augroup) end
+	if vim.g.tabnames_config.setup_commands then tabnames.setup_commands() end
 end
 
 function tabnames.configure(opts)
@@ -27,102 +53,128 @@ function tabnames.configure(opts)
 		default_tab_name = {
 			config.default_tab_name,
 			function(arg)
-				if arg == true then return false, 'tabnames: default_tab_name cannot be set to true' end
+				if arg == true then return false, 'tabnames: default_tab_name can only be either false or a boolean' end
 				return vim.tbl_contains({ 'boolean', 'function' }, type(arg))
 			end,
 		},
-		auto_suggest_names = { config.auto_suggest_names, { 'boolean' } },
-		experimental = { config.experimental, { 'table' } },
-		['experimental.session_support'] = { config.experimental.session_support, { 'boolean' } },
+		auto_suggest_names = { config.auto_suggest_names, {'boolean'} },
+		session_support = { config.session_support, {'boolean'} },
+		update_default_tab_name = { config.update_default_tab_name, {'table'}},
+		setup_autocmds = { config.setup_autocmds, {'boolean'} },
+		setup_commands = { config.setup_commands, {'boolean'} }
 	})
 	vim.g.tabnames_config = config
+	return vim.g.tabnames_config
 end
 
-function tabnames.setup(opts)
-	tabnames.configure(opts)
-
-	local tabnames_augroup = vim.api.nvim_create_augroup('Tabnames', { clear = true })
+function tabnames.setup_autocmds(augroup)
 	local config = vim.g.tabnames_config
-	if config.experimental.session_support then
-		vim.api.nvim_create_autocmd({ 'TabClosed', 'VimLeavePre' }, {
-			group = tabnames_augroup,
-			callback = function()
-				local index = tonumber(vim.fn.expand('<afile>'))
+	local autocmd = vim.api.nvim_create_autocmd
+	if config.session_support then
+		autocmd({ 'TabClosed', 'VimLeavePre' }, {
+			group = augroup,
+			callback = function(details)
+				local index = tonumber(vim.fn.expand(details.match))
 				if index then tabnames.cache_set(index, nil) end
 			end,
 			desc = 'Auto-delete cached tab name',
 		})
-		vim.api.nvim_create_autocmd('SessionLoadPost', {
-			group = tabnames_augroup,
+		autocmd('SessionLoadPost', {
+			group = augroup,
 			callback = function()
 				if vim.g.TabnamesCache then
 					for tabnr, name in pairs(vim.json.decode(vim.g.TabnamesCache)) do
 						tabnames.set_tab_name(tonumber(tabnr), name)
 					end
 				end
-			end
+			end,
+			desc = 'Load saved stuff',
 		})
 	end
 
 	if config.default_tab_name then
-		vim.api.nvim_create_autocmd({ 'TabNewEntered' }, {
-			group = tabnames_augroup,
-			callback = function() tabnames.set_tab_name() end,
+		autocmd(config.update_default_tab_name, {
+			group = augroup,
+			callback = function()
+				if not vim.t.manual_rename then tabnames.set_tab_name() end
+			end,
 			desc = 'Auto-set tab name',
 		})
 	end
-	vim.api.nvim_create_autocmd({ 'UIEnter' }, {
-		group = tabnames_augroup,
-		callback = function() tabnames.set_tab_name() end
+	autocmd({ 'UIEnter' }, {
+		group = augroup,
+		callback = function() tabnames.set_tab_name() end,
+		desc = 'Auto-set tab name on startup',
 	})
+end
 
+function tabnames.setup_commands()
+	local config = vim.g.tabnames_config
 	vim.api.nvim_create_user_command('TabRename',
-		function(args) tabnames.set_tab_name(0, args.args, true, true) end,
+		function(args) tabnames.set_tab_name(0, args.args, {notify = true, expand = true}) end,
 		{
 			desc = 'Rename the current tab',
 			nargs = '*',
 			complete = function()
+				local results = {}
 				if config.auto_suggest_names then
 					local current_tabnr = vim.api.nvim_tabpage_get_number(0)
-					return vim.tbl_map(function(preset) return preset(current_tabnr) end, tabnames.tab_name_presets)
+					for _, preset in pairs(tabnames.presets) do
+						local result = preset(current_tabnr)
+						if result and result ~= '' then table.insert(results, result) end
+					end
+					return results
 				end
-				return {}
+				return results
 			end,
 		}
 	)
 	vim.api.nvim_create_user_command('TabRenameClear',
-		function() tabnames.set_tab_name(0, '', true) end,
-		{
-			desc = 'Clear the current tab name',
-			nargs = '*',
-			complete = function() end,
-		}
+		function() tabnames.set_tab_name(0, nil, {notify = true}) end,
+		{ desc = 'Clear current tab name, reverting back to default' }
 	)
-
-	vim.g.tabnames_loaded = true
 end
 
-function tabnames.set_tab_name(tabnr, name, notify, expand)
-	local config = vim.g.tabnames_config
+function tabnames.set_tab_name(tabnr, name, opts)
 	local current_tab = not tabnr or tabnr == 0 or tabnr == vim.api.nvim_tabpage_get_number(0)
 	if current_tab then tabnr = vim.api.nvim_tabpage_get_number(0) end
-	local tabname = name
-	if not tabname and type(config.default_tab_name) == 'function' then tabname = config.default_tab_name(tabnr) end
-	tabname = tostring(tabname)
-	if expand then tabname = vim.fn.expand(tabname) end
+	if not vim.api.nvim_tabpage_is_valid(tabnr) then
+		vim.notify('tabnames: tabpage #' .. tabnr .. 'invalid', vim.log.levels.ERROR)
+	end
 
-	vim.t[tabnr].name = tabname
-	if config.experimental.session_support then tabnames.cache_set(tabnr, tabname) end
+	local old_name = vim.t[tabnr].name
+	local new_name
+	local manual_rename = name ~= nil
 
-	if notify then
+	opts = opts or {}
+	local config = vim.g.tabnames_config
+
+	if not manual_rename and type(config.default_tab_name) == 'function' then
+		new_name = config.default_tab_name(tabnr)
+	end
+	new_name = tostring(new_name)
+	if opts.expand then new_name = vim.fn.expand(new_name) end
+
+	vim.t[tabnr].name = new_name
+	vim.t[tabnr].manual_rename = manual_rename
+	if config.session_support then tabnames.cache_set(tabnr, new_name) end
+
+	if opts.notify then
 		vim.notify(
-			'Renamed ' .. (current_tab and 'current tab' or ('tab #' .. tabnr)) .. (' to "%s"'):format(tabname),
+			'Renamed ' .. (current_tab and 'current tab' or ('tab #' .. tabnr)) .. (' to "%s"'):format(new_name),
 			vim.log.levels.INFO
 		)
 	end
+	vim.api.nvim_exec_autocmds({'User'}, {
+		pattern = 'TabRenamed',
+		data = {
+			old_name = old_name,
+			new_name = new_name,
+			manual_rename = manual_rename
+		}
+	})
 
-	vim.cmd.doautocmd("User TabRenamed")
-	return tabname
+	return vim.t[tabnr].name
 end
 
 return tabnames
