@@ -2,7 +2,7 @@ local tabnames = {}
 local g, api, fn = vim.g, vim.api, vim.fn
 
 -- Some presets for tab naming
---- @type table<string, fun(int?): string>
+--- @type table<string, fun(int?): string|nil|false>
 tabnames.presets = {
   tabnr = api.nvim_tabpage_get_number,
   short_tab_cwd = function(tabnr) return fn.pathshorten(fn.getcwd(-1, tabnr)) end,
@@ -13,11 +13,14 @@ tabnames.presets = {
   end,
   special_buffers = function(tabnr)
     local active_buffer = api.nvim_win_get_buf(api.nvim_tabpage_get_win(tabnr))
-    if vim.bo[active_buffer].buftype == 'nofile' then return fn.expand('%:t') end
+    if vim.bo[active_buffer].buftype == 'nofile' then
+      local expanded = fn.expand('%:t')
+      return type(expanded) == 'table' and expanded[1] or expanded
+    end
   end,
   special_tabs = function(tabnr)
     if vim.t[tabnr].diffview_view_initialized then return 'Diffview' end
-  end
+  end,
 }
 
 tabnames.cache = {}
@@ -25,12 +28,10 @@ tabnames.cache = {}
 -- also update ./health.lua if you update this
 g.tabnames_config = {
   auto_suggest_names = true,
-  auto_health_check = true,
   default_tab_name = function(tabnr)
-    return
-        tabnames.presets.special_tabs(tabnr)
-        or tabnames.presets.special_buffers(tabnr)
-        or tabnames.presets.short_tab_cwd(tabnr)
+    return tabnames.presets.special_tabs(tabnr)
+      or tabnames.presets.special_buffers(tabnr)
+      or tabnames.presets.short_tab_cwd(tabnr)
   end,
   update_default_tab_name_events = { 'TabNewEntered', 'BufEnter' },
   setup_autocmds = true,
@@ -51,9 +52,6 @@ end
 
 function tabnames.configure(opts)
   local config = opts and vim.tbl_deep_extend('force', g.tabnames_config, opts) or g.tabnames_config
-  if config.auto_health_check then
-    require('tabnames.health').check()
-  end
   g.tabnames_config = config
   return g.tabnames_config
 end
@@ -110,7 +108,8 @@ function tabnames.setup_commands()
     end
     return results
   end
-  api.nvim_create_user_command('TabRename',
+  api.nvim_create_user_command(
+    'TabRename',
     function(args) tabnames.set_tab_name(0, args.args, { message = true }) end,
     {
       desc = 'Rename the current tab',
@@ -118,22 +117,23 @@ function tabnames.setup_commands()
       complete = complete,
     }
   )
-  api.nvim_create_user_command('TabRenameClear',
+  api.nvim_create_user_command(
+    'TabRenameClear',
     function() tabnames.set_tab_name(0, nil, { message = true }) end,
     { desc = 'Clear current tab name, reverting back to default' }
   )
 end
 
-function tabnames.set_tab_name(tabnr, name, opts)
+function tabnames.set_tab_name(tabnr, new_name, opts)
   local current_tab = not tabnr or tabnr == 0 or tabnr == api.nvim_tabpage_get_number(0)
   if current_tab then tabnr = api.nvim_tabpage_get_number(0) end
   if not api.nvim_tabpage_is_valid(tabnr) then
     vim.notify('tabnames: tabpage #' .. tabnr .. ' is invalid', vim.log.levels.ERROR)
+    return false
   end
 
   local old_name = vim.t[tabnr].name
-  local new_name = name
-  local manual_rename = name ~= nil
+  local manual_rename = new_name ~= nil
 
   opts = opts or {}
   local config = g.tabnames_config
@@ -145,7 +145,7 @@ function tabnames.set_tab_name(tabnr, name, opts)
 
   vim.t[tabnr].name = new_name
   vim.t[tabnr].manual_rename = manual_rename
-  if config.session_support then tabnames.cache_set(tabnr, new_name) end
+  tabnames.cache_set(tabnr, new_name)
 
   if opts.notify then
     vim.notify(
@@ -154,19 +154,18 @@ function tabnames.set_tab_name(tabnr, name, opts)
     )
   end
   if opts.message then
-    print('Renamed ' .. (current_tab and 'current tab' or ('tab #' .. tabnr)) .. (' to "%s"'):format(new_name))
+    vim.print('Renamed ' .. (current_tab and 'current tab' or ('tab #' .. tabnr)) .. (' to "%s"'):format(new_name))
   end
   api.nvim_exec_autocmds({ 'User' }, {
     pattern = 'TabRenamed',
     data = {
       old_name = old_name,
       new_name = new_name,
-      manual_rename = manual_rename
-    }
+      manual_rename = manual_rename,
+    },
   })
 
   return vim.t[tabnr].name
 end
 
 return tabnames
-

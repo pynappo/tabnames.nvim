@@ -1,17 +1,11 @@
 local M = {}
 
 M.check = function()
-  local config = vim.g.tabnames_config
   vim.health.start('Config format')
-  if M.validate_config(config) then
-    vim.health.ok('vim.g.tabnames_config is in the correct format')
-  else
-    vim.health.error('vim.g.tabnames_config is not accurate')
-  end
-end
 
-M.validate_config = function(config)
-  vim.validate({
+  local config, config_ok = vim.g.tabnames_config, true
+  local config_format = {
+    auto_suggest_names = { config.auto_suggest_names, { 'boolean' } },
     default_tab_name = {
       config.default_tab_name,
       function(arg)
@@ -19,12 +13,24 @@ M.validate_config = function(config)
         return vim.tbl_contains({ 'boolean', 'function' }, type(arg))
       end,
     },
-    auto_suggest_names = { config.auto_suggest_names, { 'boolean' } },
     update_default_tab_name_events = { config.update_default_tab_name_events, { 'table' } },
     setup_autocmds = { config.setup_autocmds, { 'boolean' } },
-    setup_commands = { config.setup_commands, { 'boolean' } }
-  })
-  return true
+    setup_commands = { config.setup_commands, { 'boolean' } },
+  }
+  vim.validate(config_format)
+
+  for k, v in pairs(config) do
+    if not config_format[k] then
+      vim.health.warn('In vim.g.tabnames_config, ' .. k .. ' = ' .. tostring(v) .. ' is not a valid config key.')
+    end
+  end
+  if config_ok then vim.health.ok('All the valid config options in vim.g.tabnames_config are set properly') end
+
+  for tabnr, name in pairs(vim.json.decode(vim.g.TabnamesCache)) do
+    if not vim.api.nvim_tabpage_is_valid(tabnr) then
+      vim.health.error('Tab ' .. tabnr .. ' in the cache with name ' .. name .. " doesn't exist.")
+    end
+  end
 end
 
 return M
